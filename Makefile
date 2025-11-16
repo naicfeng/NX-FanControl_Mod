@@ -38,7 +38,7 @@ out:
 	@echo ""
 	@echo "Packaging overlay..."
 	@mkdir -p $(OUT_DIR)/switch/.overlays
-	@cp ./overlay/NX-FanControl.ovl $(OUT_DIR)/switch/.overlays/Nx-FanControl.ovl
+	@cp ./overlay/out/NX-FanControl.ovl $(OUT_DIR)/switch/.overlays/NX-FanControl.ovl
 
 	@echo "Packaging sysmodule..."
 	@mkdir -p $(OUT_DIR)/atmosphere/contents/00FF0000B378D640/flags

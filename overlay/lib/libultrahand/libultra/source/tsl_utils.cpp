@@ -28,6 +28,7 @@ extern "C" { // assertion override
 }
 
 namespace ult {
+
     bool correctFrameSize; // for detecting the correct Overlay display size
 
     u16 DefaultFramebufferWidth = 448;            ///< Width of the framebuffer
@@ -77,6 +78,14 @@ namespace ult {
         size_t keyStart, keyEnd, colonPos, valueStart, valueEnd;
         std::string key, value;
     
+        auto normalizeNewlines = [](std::string &s) {
+            size_t n = 0;
+            while ((n = s.find("\\n", n)) != std::string::npos) {
+                s.replace(n, 2, "\n");
+                n += 1;
+            }
+        };
+    
         while ((pos = content.find('"', pos)) != std::string::npos) {
             keyStart = pos + 1;
             keyEnd = content.find('"', keyStart);
@@ -91,11 +100,16 @@ namespace ult {
             if (valueStart == std::string::npos || valueEnd == std::string::npos) break;
     
             value = content.substr(valueStart + 1, valueEnd - valueStart - 1);
+    
+            // 🔹 Convert escaped newlines (\\n) into real ones
+            normalizeNewlines(key);
+            normalizeNewlines(value);
+    
             result[key] = value;
+    
             key.clear();
             value.clear();
-    
-            pos = valueEnd + 1; // Move to the next key-value pair
+            pos = valueEnd + 1; // Move to next pair
         }
     }
     
@@ -188,13 +202,60 @@ namespace ult {
     //    snprintf(titleIdStr, sizeof(titleIdStr), "%016lX", tid);
     //    return std::string(titleIdStr);
     //}
+    
+    //std::string getProcessIdAsString() {
+    //    u64 pid = 0;
+    //    if (R_FAILED(pmdmntGetApplicationProcessId(&pid)))
+    //        return NULL_STR;
+    //    
+    //    char pidStr[21];  // Max u64 is 20 digits + null terminator
+    //    snprintf(pidStr, sizeof(pidStr), "%llu", pid);
+    //    return std::string(pidStr);
+    //}
+
+    std::string getBuildIdAsString() {
+        u64 pid = 0;
+        if (R_FAILED(pmdmntGetApplicationProcessId(&pid)))
+            return NULL_STR;
+        
+        Service srv;
+        if (R_FAILED(smGetService(&srv, "dmnt:cht")))
+            return NULL_STR;
+        
+        if (R_FAILED(serviceDispatch(&srv, 65003))) {
+            serviceClose(&srv);
+            return NULL_STR;
+        }
+        
+        struct {
+            u64 process_id;
+            u64 title_id;
+            struct { u64 base; u64 size; } main_nso_extents;
+            struct { u64 base; u64 size; } heap_extents;
+            struct { u64 base; u64 size; } alias_extents;
+            struct { u64 base; u64 size; } address_space_extents;
+            u8 main_nso_build_id[0x20];
+        } metadata;
+        
+        Result rc = serviceDispatchOut(&srv, 65002, metadata);
+        serviceClose(&srv);
+        
+        if (R_FAILED(rc))
+            return NULL_STR;
+        
+        u64 buildid;
+        std::memcpy(&buildid, metadata.main_nso_build_id, sizeof(u64));
+        
+        char buildIdStr[17];
+        snprintf(buildIdStr, sizeof(buildIdStr), "%016lX", __builtin_bswap64(buildid));
+        return std::string(buildIdStr);
+    }
+    
 
     std::string getTitleIdAsString() {
         u64 pid = 0, tid = 0;
-        if (R_FAILED(pmdmntGetApplicationProcessId(&pid)))
-            return NULL_STR;
-    
-        if (R_FAILED(pmdmntGetProgramId(&tid, pid)))
+        if (R_FAILED(pmdmntGetApplicationProcessId(&pid)) ||
+            R_FAILED(pmdmntGetProgramId(&tid, pid)))
             return NULL_STR;
     
         char tidStr[17];
@@ -215,6 +276,8 @@ namespace ult {
     bool useSwipeToOpen = true;
     bool useLaunchCombos = true;
     bool useNotifications = true;
+    bool useSoundEffects = true;
+    bool useHapticFeedback = false;
     bool usePageSwap = false;
     bool useDynamicLogo = true;
     bool useSelectionBG = true;
@@ -252,6 +315,9 @@ namespace ult {
     std::atomic<float> selectWidth;
     std::atomic<float> nextPageWidth;
     std::atomic<bool> inMainMenu{false};
+    std::atomic<bool> inHiddenMode{false};
+    std::atomic<bool> inSettingsMenu{false};
+    std::atomic<bool> inSubSettingsMenu{false};
     std::atomic<bool> inOverlaysPage{false};
     std::atomic<bool> inPackagesPage{false};
     
@@ -374,8 +440,9 @@ namespace ult {
     }
     
     
-    CONSTEXPR_STRING std::string whiteColor = "#FFFFFF";
-    CONSTEXPR_STRING std::string blackColor = "#000000";
+    CONSTEXPR_STRING std::string whiteColor = "FFFFFF";
+    CONSTEXPR_STRING std::string blackColor = "000000";
+    CONSTEXPR_STRING std::string greyColor = "AAAAAA";
     
     std::atomic<bool> languageWasChanged{false};
 
@@ -405,6 +472,7 @@ namespace ult {
     std::string HIDE_OVERLAY = "Hide Overlay";
     std::string HIDE_PACKAGE = "Hide Package";
     std::string LAUNCH_ARGUMENTS = "Launch Arguments";
+    std::string FORCE_LNY2_SUPPORT = "Force LNY2 Support";
     std::string QUICK_LAUNCH = "Quick Launch";
     std::string BOOT_COMMANDS = "Boot Commands";
     std::string EXIT_COMMANDS = "Exit Commands";
@@ -432,6 +500,7 @@ namespace ult {
     std::string USER_GUIDE = "User Guide";
     std::string SHOW_HIDDEN = "Show Hidden";
     std::string SHOW_DELETE = "Show Delete";
+    std::string SHOW_UNSUPPORTED = "Show Unsupported";
     std::string PAGE_SWAP = "Page Swap";
     std::string RIGHT_SIDE_MODE = "Right-side Mode";
     std::string OVERLAY_VERSIONS = "Overlay Versions";
@@ -440,7 +509,7 @@ namespace ult {
     //std::string VERSION_LABELS = "Version Labels";
     std::string KEY_COMBO = "Key Combo";
     std::string MODE = "Mode";
-    std::string MODES = "Modes";
+    std::string LAUNCH_MODES = "Launch Modes";
     std::string LANGUAGE = "Language";
     std::string OVERLAY_INFO = "Overlay Info";
     std::string SOFTWARE_UPDATE = "Software Update";
@@ -470,6 +539,8 @@ namespace ult {
     std::string FAILED_TO_OPEN = "Failed to open file";
     std::string LAUNCH_COMBOS = "Launch Combos";
     std::string NOTIFICATIONS = "Notifications";
+    std::string SOUND_EFFECTS = "Sound Effects";
+    std::string HAPTIC_FEEDBACK = "Haptic Feedback";
     std::string OPAQUE_SCREENSHOTS = "Opaque Screenshots";
 
     std::string PACKAGE_INFO = "Package Info";
@@ -504,6 +575,7 @@ namespace ult {
     std::string REBOOT_IS_REQUIRED = "Reboot is required.";
     std::string HOLD_A_TO_DELETE = "Hold \uE0E0 to Delete";
     std::string SELECTION_IS_EMPTY = "Selection is empty!";
+    std::string FORCED_SUPPORT_WARNING = "Forcing support can be dangerous.";
 
 
     //std::string PACKAGE_VERSIONS = "Package Versions";
@@ -522,8 +594,8 @@ namespace ult {
     std::string UNAVAILABLE_SELECTION = "Not available";
 
 
-    std::string ON = "On";
-    std::string OFF = "Off";
+    std::string ON = "\uE14B";
+    std::string OFF = "\uE14C";
 
     std::string OK = "OK";
     std::string BACK = "Back";
@@ -613,6 +685,7 @@ namespace ult {
         HIDE_OVERLAY = "Hide Overlay";
         HIDE_PACKAGE = "Hide Package";
         LAUNCH_ARGUMENTS = "Launch Arguments";
+        FORCE_LNY2_SUPPORT = "Force LNY2 Support";
         QUICK_LAUNCH = "Quick Launch";
         BOOT_COMMANDS = "Boot Commands";
         EXIT_COMMANDS = "Exit Commands";
@@ -639,6 +712,7 @@ namespace ult {
         USER_GUIDE = "User Guide";
         SHOW_HIDDEN = "Show Hidden";
         SHOW_DELETE = "Show Delete";
+        SHOW_UNSUPPORTED = "Show Unsupported";
         PAGE_SWAP = "Page Swap";
         RIGHT_SIDE_MODE = "Right-side Mode";
         OVERLAY_VERSIONS = "Overlay Versions";
@@ -647,7 +721,7 @@ namespace ult {
         //VERSION_LABELS = "Version Labels";
         KEY_COMBO = "Key Combo";
         MODE = "Mode";
-        MODES = "Modes";
+        LAUNCH_MODES = "Launch Modes";
         LANGUAGE = "Language";
         OVERLAY_INFO = "Overlay Info";
         SOFTWARE_UPDATE = "Software Update";
@@ -678,9 +752,11 @@ namespace ult {
 
         LAUNCH_COMBOS = "Launch Combos";
         NOTIFICATIONS = "Notifications";
+        SOUND_EFFECTS = "Sound Effects";
+        HAPTIC_FEEDBACK = "Haptic Feedback";
         OPAQUE_SCREENSHOTS = "Opaque Screenshots";
-        ON = "On";
-        OFF = "Off";
+        ON = "\uE14B";
+        OFF = "\uE14C";
         PACKAGE_INFO = "Package Info";
         _TITLE = "Title";
         _VERSION= "Version";
@@ -726,6 +802,7 @@ namespace ult {
         REBOOT_IS_REQUIRED = "Reboot is required.";
         HOLD_A_TO_DELETE = "Hold  to Delete";
         SELECTION_IS_EMPTY = "Selection is empty!";
+        FORCED_SUPPORT_WARNING = "Forcing support can be dangerous.";
 
         //EMPTY = "Empty";
     
@@ -793,7 +870,7 @@ namespace ult {
         }
 
         
-        static std::unordered_map<std::string, std::string*> configMap = {
+        std::unordered_map<std::string, std::string*> configMap = {
             #if IS_LAUNCHER_DIRECTIVE
             {"ENGLISH", &ENGLISH},
             {"SPANISH", &SPANISH},
@@ -820,6 +897,7 @@ namespace ult {
             {"HIDE_PACKAGE", &HIDE_PACKAGE},
             {"HIDE_OVERLAY", &HIDE_OVERLAY},
             {"LAUNCH_ARGUMENTS", &LAUNCH_ARGUMENTS},
+            {"FORCE_LNY2_SUPPORT", &FORCE_LNY2_SUPPORT},
             {"QUICK_LAUNCH", &QUICK_LAUNCH},
             {"BOOT_COMMANDS", &BOOT_COMMANDS},
             {"EXIT_COMMANDS", &EXIT_COMMANDS},
@@ -847,6 +925,7 @@ namespace ult {
             {"USER_GUIDE", &USER_GUIDE},
             {"SHOW_HIDDEN", &SHOW_HIDDEN},
             {"SHOW_DELETE", &SHOW_DELETE},
+            {"SHOW_UNSUPPORTED", &SHOW_UNSUPPORTED},
             {"PAGE_SWAP", &PAGE_SWAP},
             {"RIGHT_SIDE_MODE", &RIGHT_SIDE_MODE},
             {"OVERLAY_VERSIONS", &OVERLAY_VERSIONS},
@@ -855,7 +934,7 @@ namespace ult {
             //{"VERSION_LABELS", &VERSION_LABELS},
             {"KEY_COMBO", &KEY_COMBO},
             {"MODE", &MODE},
-            {"MODES", &MODES},
+            {"LAUNCH_MODES", &LAUNCH_MODES},
             {"LANGUAGE", &LANGUAGE},
             {"OVERLAY_INFO", &OVERLAY_INFO},
             {"SOFTWARE_UPDATE", &SOFTWARE_UPDATE},
@@ -886,6 +965,8 @@ namespace ult {
 
             {"LAUNCH_COMBOS", &LAUNCH_COMBOS},
             {"NOTIFICATIONS", &NOTIFICATIONS},
+            {"SOUND_EFFECTS", &SOUND_EFFECTS},
+            {"HAPTIC_FEEDBACK", &HAPTIC_FEEDBACK},
             {"OPAQUE_SCREENSHOTS", &OPAQUE_SCREENSHOTS},
 
             {"PACKAGE_INFO", &PACKAGE_INFO},
@@ -920,6 +1001,7 @@ namespace ult {
             {"REBOOT_IS_REQUIRED", &REBOOT_IS_REQUIRED},
             {"HOLD_A_TO_DELETE", &HOLD_A_TO_DELETE},
             {"SELECTION_IS_EMPTY", &SELECTION_IS_EMPTY},
+            {"FORCED_SUPPORT_WARNING", &FORCED_SUPPORT_WARNING},
 
             //{"PACKAGE_VERSIONS", &PACKAGE_VERSIONS},
             //{"PROGRESS_ANIMATION", &PROGRESS_ANIMATION},
@@ -992,6 +1074,10 @@ namespace ult {
     
         // Iterate over the map to update global variables
         for (auto& kv : configMap) {
+            // 跳过对ON和OFF的语言更新
+            if (kv.first == "ON" || kv.first == "OFF") {
+                continue;
+            }
             auto it = jsonMap.find(kv.first);
             if (it != jsonMap.end()) {
                 updateIfNotEmpty(*kv.second, it->second);
@@ -1075,41 +1161,47 @@ namespace ult {
 
     // Unified function to apply replacements
     void applyLangReplacements(std::string& text, bool isValue) {
-        // Static maps for replacements
-        #if IS_LAUNCHER_DIRECTIVE
-        const std::unordered_map<std::string, std::string*> launcherReplacements = {
-            {"Reboot To", &REBOOT_TO},
-            {"Boot Entry", &BOOT_ENTRY},
-            {"Reboot", &REBOOT},
-            {"Shutdown", &SHUTDOWN}
-        };
-        #endif
-    
-        const std::unordered_map<std::string, std::string*> valueReplacements = {
-            {"On", &ON},
-            {"Off", &OFF}
-        };
-    
-        // Determine which map to use
-        const std::unordered_map<std::string, std::string*>* replacements = nullptr;
-    
-        if (!isValue) {
-            #if IS_LAUNCHER_DIRECTIVE
-            replacements = &launcherReplacements;
-            #else
-            return;
-            #endif
-        } else {
-            replacements = &valueReplacements;
-        }
-    
-        // Perform the direct replacement
-        if (replacements) {
-            auto it = replacements->find(text);
-            if (it != replacements->end()) {
-                text = *(it->second);
+        if (isValue) {
+            // Direct comparison for value replacements
+            if (text.length() == 2) {
+                if (text[0] == 'O') {
+                    if (text[1] == 'n') {
+                        text = ON;
+                        return;
+                    } else if (text[1] == 'f' && text == "Off") {
+                        text = OFF;
+                        return;
+                    }
+                }
             }
         }
+        #if IS_LAUNCHER_DIRECTIVE
+        else {
+            // Direct comparison for launcher replacements
+            switch (text.length()) {
+                case 6:
+                    if (text == "Reboot") {
+                        text = REBOOT;
+                    }
+                    break;
+                case 8:
+                    if (text == "Shutdown") {
+                        text = SHUTDOWN;
+                    }
+                    break;
+                case 9:
+                    if (text == "Reboot To") {
+                        text = REBOOT_TO;
+                    }
+                    break;
+                case 10:
+                    if (text == "Boot Entry") {
+                        text = BOOT_ENTRY;
+                    }
+                    break;
+            }
+        }
+        #endif
     }
     
     
@@ -1170,13 +1262,13 @@ namespace ult {
         {"ult_overlay_text_color", "9ed0ff"},
         {"package_text_color", whiteColor},
         {"ult_package_text_color", "9ed0ff"},
-        {"banner_version_text_color", "AAAAAA"},
-        {"overlay_version_text_color", "AAAAAA"},
+        {"banner_version_text_color", greyColor},
+        {"overlay_version_text_color", greyColor},
         {"ult_overlay_version_text_color", "00FFDD"},
-        {"package_version_text_color", "AAAAAA"},
+        {"package_version_text_color", greyColor},
         {"ult_package_version_text_color", "00FFDD"},
         {"on_text_color", "00FFDD"},
-        {"off_text_color", "AAAAAA"},
+        {"off_text_color", greyColor},
         {"invalid_text_color", "FF0000"},
         {"inprogress_text_color", "FFFF45"},
         {"selection_text_color", "9ed0ff"},
@@ -1224,23 +1316,23 @@ namespace ult {
     
     
     
-    float calculateAmplitude(float x, float peakDurationFactor) {
-        //const float phasePeriod = 360.0f * peakDurationFactor;  // One full phase period
-    
-        // Convert x from radians to degrees and calculate phase within the period
-        const int phase = static_cast<int>(x * RAD_TO_DEG) % static_cast<int>(360.0f * peakDurationFactor);
-    
-        // Check if the phase is odd using bitwise operation
-        if (phase & 1) {
-            return 1.0f;  // Flat amplitude (maximum positive)
-        } else {
-            // Calculate the sinusoidal amplitude for the remaining period
-            return (APPROXIMATE_cos(x) + 1.0f) / 2.0f;  // Cosine function expects radians
-        }
-    }
+    //float calculateAmplitude(float x, float peakDurationFactor) {
+    //    //const float phasePeriod = 360.0f * peakDurationFactor;  // One full phase period
+    //
+    //    // Convert x from radians to degrees and calculate phase within the period
+    //    const int phase = static_cast<int>(x * RAD_TO_DEG) % static_cast<int>(360.0f * peakDurationFactor);
+    //
+    //    // Check if the phase is odd using bitwise operation
+    //    if (phase & 1) {
+    //        return 1.0f;  // Flat amplitude (maximum positive)
+    //    } else {
+    //        // Calculate the sinusoidal amplitude for the remaining period
+    //        return (APPROXIMATE_cos(x) + 1.0f) / 2.0f;  // Cosine function expects radians
+    //    }
+    //}
             
     
-    
+    std::atomic<bool> refreshWallpaperNow(false);
     std::atomic<bool> refreshWallpaper(false);
     std::vector<u8> wallpaperData; 
     std::atomic<bool> inPlot(false);
@@ -1250,74 +1342,185 @@ namespace ult {
     
     
     // Function to load the RGBA file into memory and modify wallpaperData directly
+    //void loadWallpaperFile(const std::string& filePath, s32 width, s32 height) {
+    //    const size_t originalDataSize = width * height * 4; // Original size in bytes (4 bytes per pixel)
+    //    const size_t compressedDataSize = originalDataSize / 2; // RGBA4444 uses half the space
+    //    
+    //    wallpaperData.resize(compressedDataSize);
+    //    
+    //    if (!isFileOrDirectory(filePath)) {
+    //        wallpaperData.clear();
+    //        return;
+    //    }
+    //    
+    //    #if !USING_FSTREAM_DIRECTIVE
+    //        FILE* file = fopen(filePath.c_str(), "rb");
+    //        if (!file) {
+    //            wallpaperData.clear();
+    //            return;
+    //        }
+    //        
+    //        std::vector<uint8_t> buffer;
+    //        //if (reducedMemory) {
+    //        //    // Reuse wallpaperData to avoid double allocation
+    //        //    buffer.swap(wallpaperData);
+    //        //    buffer.resize(originalDataSize);
+    //        //} else {
+    //        buffer.resize(originalDataSize);
+    //        //}
+    //        
+    //        const size_t bytesRead = fread(buffer.data(), 1, originalDataSize, file);
+    //        fclose(file);
+    //        
+    //        if (bytesRead != originalDataSize) {
+    //            wallpaperData.clear();
+    //            return;
+    //        }
+    //        
+    //    #else
+    //        std::ifstream file(filePath, std::ios::binary);
+    //        if (!file) {
+    //            wallpaperData.clear();
+    //            return;
+    //        }
+    //        
+    //        std::vector<uint8_t> buffer;
+    //        //if (reducedMemory) {
+    //        //    buffer.swap(wallpaperData);
+    //        //    buffer.resize(originalDataSize);
+    //        //} else {
+    //        buffer.resize(originalDataSize);
+    //        //}
+    //        
+    //        file.read(reinterpret_cast<char*>(buffer.data()), originalDataSize);
+    //        if (!file) {
+    //            wallpaperData.clear();
+    //            return;
+    //        }
+    //    #endif
+    //    
+    //    // Compress RGBA8888 to RGBA4444
+    //    //if (reducedMemory) {
+    //    //    // In-place compression to save memory
+    //    //    size_t writeIndex = 0;
+    //    //    for (size_t i = 0; i < originalDataSize; i += 8, writeIndex += 4) {
+    //    //        uint8_t r1 = buffer[i] >> 4;
+    //    //        uint8_t g1 = buffer[i + 1] >> 4;
+    //    //        uint8_t b1 = buffer[i + 2] >> 4;
+    //    //        uint8_t a1 = buffer[i + 3] >> 4;
+    //    //
+    //    //        uint8_t r2 = buffer[i + 4] >> 4;
+    //    //        uint8_t g2 = buffer[i + 5] >> 4;
+    //    //        uint8_t b2 = buffer[i + 6] >> 4;
+    //    //        uint8_t a2 = buffer[i + 7] >> 4;
+    //    //
+    //    //        buffer[writeIndex]     = (r1 << 4) | g1;
+    //    //        buffer[writeIndex + 1] = (b1 << 4) | a1;
+    //    //        buffer[writeIndex + 2] = (r2 << 4) | g2;
+    //    //        buffer[writeIndex + 3] = (b2 << 4) | a2;
+    //    //    }
+    //    //    buffer.resize(compressedDataSize);
+    //    //    wallpaperData.swap(buffer);
+    //    //} else {
+    //    uint8_t* input = buffer.data();
+    //    uint8_t* output = wallpaperData.data();
+    //    //uint8_t r1, g1, b1, a1;
+    //    //uint8_t r2, g2, b2, a2;
+    //    
+    //    //for (size_t i = 0, j = 0; i < originalDataSize; i += 8, j += 4) {
+    //    //    // Read 2 RGBA pixels (8 bytes)
+    //    //    const uint8_t r1 = input[i] >> 4;
+    //    //    const uint8_t g1 = input[i + 1] >> 4;
+    //    //    const uint8_t b1 = input[i + 2] >> 4;
+    //    //    const uint8_t a1 = input[i + 3] >> 4;
+    //    //    
+    //    //    const uint8_t r2 = input[i + 4] >> 4;
+    //    //    const uint8_t g2 = input[i + 5] >> 4;
+    //    //    const uint8_t b2 = input[i + 6] >> 4;
+    //    //    const uint8_t a2 = input[i + 7] >> 4;
+    //    //    
+    //    //    // Pack them into 4 bytes (2 bytes per pixel)
+    //    //    output[j]     = (r1 << 4) | g1;
+    //    //    output[j + 1] = (b1 << 4) | a1;
+    //    //    output[j + 2] = (r2 << 4) | g2;
+    //    //    output[j + 3] = (b2 << 4) | a2;
+    //    //}
+    //    
+    //    for (size_t i = 0, j = 0; i < originalDataSize; i += 16, j += 8) {
+    //        output[j]     = ((input[i]     >> 4) << 4) | (input[i + 1] >> 4);
+    //        output[j + 1] = ((input[i + 2] >> 4) << 4) | (input[i + 3] >> 4);
+    //        output[j + 2] = ((input[i + 4] >> 4) << 4) | (input[i + 5] >> 4);
+    //        output[j + 3] = ((input[i + 6] >> 4) << 4) | (input[i + 7] >> 4);
+    //        output[j + 4] = ((input[i + 8] >> 4) << 4) | (input[i + 9] >> 4);
+    //        output[j + 5] = ((input[i + 10] >> 4) << 4) | (input[i + 11] >> 4);
+    //        output[j + 6] = ((input[i + 12] >> 4) << 4) | (input[i + 13] >> 4);
+    //        output[j + 7] = ((input[i + 14] >> 4) << 4) | (input[i + 15] >> 4);
+    //    }
+    //    //}
+    //}
+
+
+    
+        
     void loadWallpaperFile(const std::string& filePath, s32 width, s32 height) {
-        const size_t originalDataSize = width * height * 4; // Original size in bytes (4 bytes per pixel)
-        const size_t compressedDataSize = originalDataSize / 2; // RGBA4444 uses half the space
+        const size_t originalDataSize = width * height * 4;
+        const size_t compressedDataSize = originalDataSize / 2;
         
         wallpaperData.resize(compressedDataSize);
-    
+        
         if (!isFileOrDirectory(filePath)) {
             wallpaperData.clear();
             return;
         }
-    
-        #if !USING_FSTREAM_DIRECTIVE
-            FILE* file = fopen(filePath.c_str(), "rb");
-            if (!file) {
-                wallpaperData.clear();
-                return;
-            }
-    
-            std::vector<uint8_t> buffer(originalDataSize);
-            const size_t bytesRead = fread(buffer.data(), 1, originalDataSize, file);
-            fclose(file);
-    
-            if (bytesRead != originalDataSize) {
-                wallpaperData.clear();
-                return;
-            }
-    
-        #else
-            std::ifstream file(filePath, std::ios::binary);
-            if (!file) {
-                wallpaperData.clear();
-                return;
-            }
-    
-            std::vector<uint8_t> buffer(originalDataSize);
-            file.read(reinterpret_cast<char*>(buffer.data()), originalDataSize);
-            if (!file) {
-                wallpaperData.clear();
-                return;
-            }
-        #endif
-    
-        // Compress RGBA8888 to RGBA4444
-        uint8_t* input = buffer.data();
-        uint8_t* output = wallpaperData.data();
-        uint8_t r1, g1, b1, a1;
-        uint8_t r2, g2, b2, a2;
-    
-        for (size_t i = 0, j = 0; i < originalDataSize; i += 8, j += 4) {
-            // Read 2 RGBA pixels (8 bytes)
-            r1 = input[i] >> 4;
-            g1 = input[i + 1] >> 4;
-            b1 = input[i + 2] >> 4;
-            a1 = input[i + 3] >> 4;
-    
-            r2 = input[i + 4] >> 4;
-            g2 = input[i + 5] >> 4;
-            b2 = input[i + 6] >> 4;
-            a2 = input[i + 7] >> 4;
-    
-            // Pack them into 4 bytes (2 bytes per pixel)
-            output[j] = (r1 << 4) | g1;
-            output[j + 1] = (b1 << 4) | a1;
-            output[j + 2] = (r2 << 4) | g2;
-            output[j + 3] = (b2 << 4) | a2;
+        
+        FILE* file = fopen(filePath.c_str(), "rb");
+        if (!file) {
+            wallpaperData.clear();
+            return;
         }
-    }
 
+        setvbuf(file, nullptr, _IOFBF, 256 * 1024);
+        
+        constexpr size_t chunkBytes = 128 * 1024;
+        uint8_t chunkBuffer[chunkBytes];
+        
+        size_t totalRead = 0;
+        uint8_t* dst = wallpaperData.data();
+        const uint8x8_t mask = vdup_n_u8(0xF0);
+        
+        while (totalRead < originalDataSize) {
+            const size_t remaining = originalDataSize - totalRead;
+            const size_t toRead = remaining < chunkBytes ? remaining : chunkBytes;
+            
+            const size_t bytesRead = fread(chunkBuffer, 1, toRead, file);
+            if (bytesRead == 0) {
+                fclose(file);
+                wallpaperData.clear();
+                return;
+            }
+            
+            const uint8_t* src = chunkBuffer;
+            size_t i = 0;
+            
+            // NEON: Process 16 bytes -> 8 bytes
+            for (; i + 16 <= bytesRead; i += 16) {
+                uint8x16_t data = vld1q_u8(src + i);
+                uint8x8x2_t sep = vuzp_u8(vget_low_u8(data), vget_high_u8(data));
+                vst1_u8(dst, vorr_u8(vand_u8(sep.val[0], mask), vshr_n_u8(sep.val[1], 4)));
+                dst += 8;
+            }
+            
+            // Scalar fallback
+            for (; i + 1 < bytesRead; i += 2) {
+                *dst++ = (src[i] & 0xF0) | (src[i + 1] >> 4);
+            }
+            
+            totalRead += bytesRead;
+        }
+        
+        fclose(file);
+    }
+    
 
     void loadWallpaperFileWhenSafe() {
         if (expandedMemory && !inPlot.load(std::memory_order_acquire) && !refreshWallpaper.load(std::memory_order_acquire)) {
