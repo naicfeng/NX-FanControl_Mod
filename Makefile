@@ -1,4 +1,5 @@
 # Define build targets
+APP_TITLE := FanControl
 TARGETS := lib/libfancontrol overlay sysmodule
 OUT_DIR := out
 
