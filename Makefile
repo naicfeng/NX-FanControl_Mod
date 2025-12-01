@@ -45,9 +45,10 @@ out:
 	@cp ./sysmodule/sysmodule.nsp $(OUT_DIR)/atmosphere/contents/00FF0000B378D640/exefs.nsp
 	@cp ./sysmodule/toolbox.json $(OUT_DIR)/atmosphere/contents/00FF0000B378D640/
 	@touch $(OUT_DIR)/atmosphere/contents/00FF0000B378D640/flags/boot2.flag
-	
+
 	@echo ""
 	@echo "Build complete! Files are in '$(OUT_DIR)' directory"
+	@cd $(OUT_DIR); zip -r -q -9 $(APP_TITLE).zip switch atmosphere; echo "Packaged build into '$(APP_TITLE).zip'"
 
 # Manual clean command (use 'make clean' to only clean without building)
 clean:
@@ -59,7 +60,7 @@ clean:
 	@echo "Clean complete!"
 
 # Quick rebuild - clean and build specific target
-rebuild-lib: 
+rebuild-lib:
 	@$(MAKE) -C lib/libfancontrol clean 2>/dev/null || true
 	@$(MAKE) lib/libfancontrol
 
